@@ -1,0 +1,28 @@
+{
+  "name": "AI Project Saver",
+  "description": "Auto-save new ChatGPT, Claude, and Grok chats/projects to a Google Sheet.",
+  "version": "1.1.0",
+  "manifest_version": 3,
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://x.com/*",
+    "https://*.x.ai/*",
+    "https://script.google.com/*"  // ADD THIS
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://x.com/*",
+        "https://*.x.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "options_page": "options.html"
+}
