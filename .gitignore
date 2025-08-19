@@ -1,0 +1,30 @@
+# Chrome Extension Development
+*.crx
+*.pem
+*.zip
+
+# Node modules (if added later)
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Archive files (except release packages)
+*.tar.gz
+*.tgz
+!releases/*.tar.gz
+!releases/*.zip

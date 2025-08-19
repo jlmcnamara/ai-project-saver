@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat Tracker Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        button { padding: 10px 20px; margin: 10px; font-size: 16px; }
+        .result { background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; border: 1px solid #f5c6cb; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Chat Tracker Test Suite</h1>
+    
+    <div>
+        <label>Webhook URL:</label><br>
+        <input type="url" id="webhookUrl" 
+               value="https://script.google.com/macros/s/AKfycbxS32uhNoSf8Y8oSPBrj3EYf9O62p0Aa4LBUGWnSoNGd7ycVm18THH5M5Cha97ddPDxEQ/exec" 
+               style="width: 600px; padding: 5px;">
+    </div>
+    <br>
+    
+    <button onclick="testPing()">🏓 Test Ping (GET)</button>
+    <button onclick="testSingleRow()">📝 Test Single Row</button>
+    <button onclick="testBatchRows()">📋 Test Batch Rows</button>
+    <button onclick="testDuplicates()">🔄 Test Duplicates</button>
+    <button onclick="testInvalidSignature()">🔐 Test Invalid Signature</button>
+    
+    <div id="results"></div>
+
+    <script>
+        const SECRET = 'sEcuRe_2025!xyz';
+
+        async function testPing() {
+            const webhook = document.getElementById('webhookUrl').value;
+            addResult('Testing webhook ping...', 'info');
+            
+            try {
+                const response = await fetch(webhook);
+                const data = await response.json();
+                
+                if (data.ok && data.pong) {
+                    addResult('✅ Ping successful: ' + JSON.stringify(data), 'success');
+                } else {
+                    addResult('❌ Ping failed: ' + JSON.stringify(data), 'error');
+                }
+            } catch (error) {
+                addResult('❌ Ping error: ' + error.message, 'error');
+            }
+        }
+
+        async function testSingleRow() {
+            const webhook = document.getElementById('webhookUrl').value;
+            addResult('Testing single row insertion...', 'info');
+            
+            try {
+                const body = {
+                    rows: [{
+                        platform: 'TestPlatform',
+                        type: 'Chat',
+                        title: 'Test Single Row ' + Date.now(),
+                        url: 'https://test.com/single',
+                        id: 'single_' + Date.now(),
+                        notes: 'Single row test'
+                    }]
+                };
+
+                body.sig = await sign(body, SECRET);
+
+                const response = await fetch(webhook, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+                
+                if (result.ok) {
+                    addResult('✅ Single row test successful: ' + JSON.stringify(result), 'success');
+                } else {
+                    addResult('❌ Single row test failed: ' + JSON.stringify(result), 'error');
+                }
+            } catch (error) {
+                addResult('❌ Single row error: ' + error.message, 'error');
+            }
+        }
+
+        async function testBatchRows() {
+            const webhook = document.getElementById('webhookUrl').value;
+            addResult('Testing batch row insertion...', 'info');
+            
+            try {
+                const timestamp = Date.now();
+                const body = {
+                    rows: [
+                        {
+                            platform: 'ChatGPT',
+                            type: 'Chat',
+                            title: 'Batch Test Chat 1 ' + timestamp,
+                            url: 'https://chat.openai.com/c/batch1',
+                            id: 'batch1_' + timestamp,
+                            notes: 'Batch test 1'
+                        },
+                        {
+                            platform: 'Claude',
+                            type: 'Project',
+                            title: 'Batch Test Project 2 ' + timestamp,
+                            url: 'https://claude.ai/project/batch2',
+                            id: 'batch2_' + timestamp,
+                            notes: 'Batch test 2'
+                        }
+                    ]
+                };
+
+                body.sig = await sign(body, SECRET);
+
+                const response = await fetch(webhook, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+                
+                if (result.ok) {
+                    addResult('✅ Batch test successful: ' + JSON.stringify(result), 'success');
+                } else {
+                    addResult('❌ Batch test failed: ' + JSON.stringify(result), 'error');
+                }
+            } catch (error) {
+                addResult('❌ Batch error: ' + error.message, 'error');
+            }
+        }
+
+        async function testDuplicates() {
+            const webhook = document.getElementById('webhookUrl').value;
+            addResult('Testing duplicate detection...', 'info');
+            
+            try {
+                const body = {
+                    rows: [{
+                        platform: 'DupeTest',
+                        type: 'Chat',
+                        title: 'Duplicate Test',
+                        url: 'https://test.com/dupe',
+                        id: 'dupe_test_123',
+                        notes: 'Should be duplicate'
+                    }]
+                };
+
+                body.sig = await sign(body, SECRET);
+
+                // Send same request twice
+                const response1 = await fetch(webhook, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const result1 = await response1.json();
+                addResult('First request: ' + JSON.stringify(result1), 'info');
+
+                // Wait a moment then send duplicate
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const response2 = await fetch(webhook, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const result2 = await response2.json();
+                
+                if (result1.appended > 0 && result2.appended === 0) {
+                    addResult('✅ Duplicate detection working: First added, second skipped', 'success');
+                } else {
+                    addResult('❌ Duplicate detection failed: ' + JSON.stringify(result2), 'error');
+                }
+            } catch (error) {
+                addResult('❌ Duplicate test error: ' + error.message, 'error');
+            }
+        }
+
+        async function testInvalidSignature() {
+            const webhook = document.getElementById('webhookUrl').value;
+            addResult('Testing invalid signature rejection...', 'info');
+            
+            try {
+                const body = {
+                    rows: [{
+                        platform: 'InvalidTest',
+                        type: 'Chat',
+                        title: 'Invalid Signature Test',
+                        url: 'https://test.com/invalid',
+                        id: 'invalid_' + Date.now(),
+                        notes: 'Should be rejected'
+                    }],
+                    sig: 'invalid_signature_here'
+                };
+
+                const response = await fetch(webhook, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+                
+                if (result.error === 'forbidden') {
+                    addResult('✅ Invalid signature correctly rejected', 'success');
+                } else {
+                    addResult('❌ Invalid signature not rejected: ' + JSON.stringify(result), 'error');
+                }
+            } catch (error) {
+                addResult('❌ Invalid signature test error: ' + error.message, 'error');
+            }
+        }
+
+        async function sign(body, secret) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(JSON.stringify(body));
+            const keyData = encoder.encode(secret);
+            
+            const key = await crypto.subtle.importKey(
+                'raw',
+                keyData,
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['sign']
+            );
+            
+            const signature = await crypto.subtle.sign('HMAC', key, data);
+            return btoa(Array.from(new Uint8Array(signature), b => String.fromCharCode(b)).join(''));
+        }
+
+        function addResult(message, type) {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = 'result ' + type;
+            div.innerHTML = '<strong>' + new Date().toLocaleTimeString() + '</strong>: ' + message;
+            results.appendChild(div);
+            
+            // Scroll to bottom
+            div.scrollIntoView();
+        }
+    </script>
+</body>
+</html>

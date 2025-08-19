@@ -1,168 +1,261 @@
-// ---- Utilities ----
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-function debounce(fn, ms=300){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+// Content script with improved resilience
+const SECRET = 'sEcuRe_2025!xyz';
 
-async function sign(body, secret) {
-  const enc = new TextEncoder().encode(JSON.stringify(body));
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', key, enc);
-  return btoa(Array.from(new Uint8Array(sig), b => String.fromCharCode(b)).join(''));
-}
-
-function platform() {
-  const h = location.hostname;
-  if (h.includes('chat.openai.com')) return 'ChatGPT';
-  if (h.includes('claude.ai')) return 'Claude';
-  if (h.includes('x.com') || h.includes('.x.ai')) return 'Grok';
-  return 'Unknown';
-}
-
-const ROUTE_PATTERNS = {
-  ChatGPT: [
-    [/^\/c\/([a-f0-9-]+)$/i, 'Chat'],
-    [/^\/p\/([a-f0-9-]+)$/i, 'Project'],
-    [/^\/g\/g-([a-z0-9]+)$/i, 'GPT'],
-    [/^\/share\/([a-f0-9-]+)$/i, 'Share']
-  ],
-  Claude: [
-    [/^\/chat\/([a-f0-9-]+)$/i, 'Chat'],
-    [/^\/project\/([a-f0-9-]+)(?:\/|$)/i, 'Project'],
-    [/^\/artifact\/([a-f0-9-]+)$/i, 'Artifact']
-  ],
-  Grok: [
-    [/.+/, 'Chat'] // fallback
-  ]
-};
-
-function parseRoute() {
-  const p = platform();
-  const path = new URL(location.href).pathname;
-  for (const [re, kind] of (ROUTE_PATTERNS[p] || [])) {
-    const m = path.match(re);
-    if (m) return { type: kind, id: m[1] || path };
-  }
-  return { type: 'Unknown', id: path };
-}
-
+// Improved selectors for better reliability
 const SELECTORS = {
-  ChatGPT: [
+  chatgpt: [
     '[data-testid="conversation-title"]',
     'nav [aria-selected="true"] span',
     'main h1',
-    '[role="heading"]'
+    'div[role="navigation"] [aria-current="page"]',
+    '[data-message-author-role="user"]:first-of-type'
   ],
-  Claude: [
+  claude: [
     '[data-sonnet-id*="title"]',
     'header h1',
-    'nav [aria-selected="true"]',
-    '[role="heading"]'
-  ],
-  Grok: [
-    'h1','[role="heading"]'
+    '[aria-label*="conversation"]',
+    'nav [aria-selected="true"]'
   ]
 };
 
-function getTitle() {
-  const sels = SELECTORS[platform()] || [];
-  for (const s of sels) {
-    const el = document.querySelector(s);
-    const t = el && el.textContent && el.textContent.trim();
-    if (t) return t.slice(0, 200);
+// Improved route patterns
+const ROUTE_PATTERNS = {
+  chatgpt: [
+    /^\/c\/([a-f0-9-]+)$/,           // Chat
+    /^\/g\/g-([a-zA-Z0-9]+)$/,       // GPT
+    /^\/p\/([a-f0-9-]+)$/,           // Project
+    /^\/share\/([a-f0-9-]+)$/        // Shared
+  ],
+  claude: [
+    /^\/chat\/([a-f0-9-]+)$/,
+    /^\/project\/([a-f0-9-]+)(?:\/|$)/,
+    /^\/artifact\/([a-f0-9-]+)$/
+  ]
+};
+
+let observer;
+let currentUrl = location.href;
+const captureQueue = [];
+
+// Initialize on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+
+// Handle navigation changes
+window.addEventListener('popstate', init);
+window.addEventListener('pushstate', init);
+window.addEventListener('replacestate', init);
+
+// Handle page show (back/forward cache)
+window.addEventListener('pageshow', init);
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    setTimeout(init, 100);
   }
-  return document.title.slice(0, 200) || '';
+});
+
+function init() {
+  if (currentUrl === location.href) return;
+  currentUrl = location.href;
+  
+  if (observer) observer.disconnect();
+  
+  // Use MutationObserver with debounce for better reliability
+  observer = new MutationObserver(debounce(() => {
+    if (document.readyState === 'complete' && document.visibilityState === 'visible') {
+      maybeRecord();
+    }
+  }, 300));
+
+  // Target main content areas instead of entire document
+  const target = document.querySelector('main') || 
+                 document.querySelector('#__next') || 
+                 document.querySelector('#root') || 
+                 document.body;
+
+  observer.observe(target, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-testid', 'aria-label', 'title']
+  });
+
+  // Initial check
+  setTimeout(maybeRecord, 500);
 }
 
-// ---- Local caches ----
-let lastKey = null;
-
-async function alreadyCaptured(key) {
-  const { captures = {} } = await chrome.storage.local.get('captures');
-  return Boolean(captures[key]);
+function debounce(fn, delay) {
+  let timeoutId;
+  return (...args) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
 }
 
-async function markCaptured(key, meta) {
-  const st = await chrome.storage.local.get('captures');
-  const captures = st.captures || {};
-  captures[key] = meta;
+async function maybeRecord() {
+  if (!navigator.onLine) return;
+
+  const platform = getPlatform();
+  if (!platform) return;
+
+  const { type, id } = parseUrl(location.href, platform);
+  if (!type || !id) return;
+
+  // Check if already captured
+  const storage = await chrome.storage.local.get(['captures']);
+  const captures = storage.captures || {};
+  const key = `${platform}|${id}`;
+  
+  if (captures[key]) return; // Already captured
+
+  const title = getTitleRobust(platform);
+  if (!title || title.includes('New chat') || title.includes('Untitled')) return;
+
+  const payload = {
+    platform,
+    type,
+    title: title.slice(0, 200), // Truncate long titles
+    url: location.href,
+    id,
+    notes: ''
+  };
+
+  // Store locally first
+  captures[key] = { timestamp: Date.now(), ...payload };
   await chrome.storage.local.set({ captures });
+
+  // Add to batch queue
+  captureQueue.push(payload);
+  debouncedFlush();
 }
 
-// ---- Queue + batch ----
-const batch = [];
-const flushBatch = debounce(async () => {
-  if (!batch.length) return;
-  const { webhook, secret } = await chrome.storage.sync.get(['webhook','secret']);
-  if (!webhook || !secret) return;
+function getPlatform() {
+  const host = location.hostname;
+  if (host.includes('openai.com')) return 'ChatGPT';
+  if (host.includes('claude.ai')) return 'Claude';
+  if (host.includes('x.com') || host.includes('x.ai')) return 'Grok';
+  return null;
+}
 
-  const payload = { rows: batch.splice(0) };
-  payload.sig = await sign(payload, secret);
+function parseUrl(url, platform) {
+  try {
+    const path = new URL(url).pathname;
+    const patterns = ROUTE_PATTERNS[platform.toLowerCase()] || [];
+    
+    for (const pattern of patterns) {
+      const match = path.match(pattern);
+      if (match) {
+        return {
+          type: getTypeFromPattern(pattern, path),
+          id: match[1]
+        };
+      }
+    }
+  } catch (e) {
+    console.warn('URL parse error:', e);
+  }
+  return { type: null, id: null };
+}
+
+function getTypeFromPattern(pattern, path) {
+  if (pattern.source.includes('\/c\/')) return 'Chat';
+  if (pattern.source.includes('\/p\/') || pattern.source.includes('project')) return 'Project';
+  if (pattern.source.includes('\/g\/')) return 'GPT';
+  if (pattern.source.includes('artifact')) return 'Artifact';
+  if (pattern.source.includes('share')) return 'Shared';
+  return 'Chat'; // Default
+}
+
+function getTitleRobust(platform) {
+  const selectors = SELECTORS[platform.toLowerCase()] || [];
+  
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el?.textContent?.trim()) {
+      return el.textContent.trim();
+    }
+  }
+  
+  // Fallback to meta tags
+  return document.querySelector('meta[property="og:title"]')?.content || 
+         document.title ||
+         'Untitled';
+}
+
+// Batch processing with HMAC signing
+const debouncedFlush = debounce(async () => {
+  if (!captureQueue.length) return;
 
   try {
-    if (!navigator.onLine) throw new Error('offline');
-    const res = await fetch(webhook, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if (!res.ok) throw new Error('http '+res.status);
-  } catch(e) {
-    // store unsent
-    const st = await chrome.storage.local.get('unsent');
-    const unsent = st.unsent || [];
-    unsent.push(...payload.rows);
-    await chrome.storage.local.set({ unsent });
+    const { webhook } = await chrome.storage.sync.get(['webhook']);
+    if (!webhook) return;
+
+    const batch = captureQueue.splice(0); // Clear queue
+    const body = { rows: batch };
+    
+    // Sign the payload
+    body.sig = await sign(body, SECRET);
+
+    await postWithRetry(webhook, body);
+  } catch (e) {
+    console.error('Batch flush error:', e);
+    // Re-queue failed items
+    captureQueue.unshift(...(body?.rows || []));
   }
 }, 1200);
 
-async function flushUnsent() {
-  const { webhook, secret } = await chrome.storage.sync.get(['webhook','secret']);
-  if (!webhook || !secret) return;
-  const st = await chrome.storage.local.get('unsent');
-  const unsent = st.unsent || [];
-  if (!unsent.length) return;
-  const payload = { rows: unsent };
-  payload.sig = await sign(payload, secret);
+async function sign(body, secret) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(JSON.stringify(body));
+  const keyData = encoder.encode(secret);
+  
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  
+  const signature = await crypto.subtle.sign('HMAC', key, data);
+  return btoa(Array.from(new Uint8Array(signature), b => String.fromCharCode(b)).join(''));
+}
+
+async function postWithRetry(webhook, body, attempt = 0) {
+  const MAX_RETRIES = 3;
+  
   try {
-    const res = await fetch(webhook, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if (res.ok) await chrome.storage.local.set({ unsent: [] });
-  } catch(e) {}
+    const response = await fetch(webhook, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('Batch sent:', result);
+    return result;
+    
+  } catch (error) {
+    console.error(`Attempt ${attempt + 1} failed:`, error);
+    
+    if (attempt < MAX_RETRIES) {
+      const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+      setTimeout(() => postWithRetry(webhook, body, attempt + 1), delay);
+    } else {
+      // Store failed posts for later retry
+      const { failed = [] } = await chrome.storage.local.get(['failed']);
+      failed.push({ webhook, body, timestamp: Date.now() });
+      await chrome.storage.local.set({ failed });
+      console.error('Max retries exceeded, stored for later');
+    }
+  }
 }
-
-window.addEventListener('online', flushUnsent);
-
-// ---- Core capture ----
-async function maybeRecord() {
-  if (document.visibilityState !== 'visible') return;
-
-  const plat = platform();
-  const { type, id } = parseRoute();
-  const url = location.href;
-  const title = getTitle();
-
-  // id fallback to url to avoid dropping sessions
-  const safeId = id || url;
-  const key = `${plat}|${type}|${safeId}`;
-  if (!safeId || !type || type === 'Unknown') return;
-  if (key === lastKey) return;
-  if (await alreadyCaptured(key)) return;
-
-  lastKey = key;
-  await markCaptured(key, { t: Date.now(), url, title });
-
-  batch.push({ platform: plat, type, title, url, id: safeId, notes: '' });
-  flushBatch();
-}
-
-// ---- Observers and lifecycle ----
-(function initObservers(){
-  const target = document.querySelector('main, #__next, #root') || document.body;
-  const obs = new MutationObserver(debounce(maybeRecord, 250));
-  obs.observe(target, { childList: true, subtree: true });
-  window.addEventListener('beforeunload', () => obs.disconnect());
-  ['popstate','pageshow','visibilitychange'].forEach(evt => window.addEventListener(evt, () => setTimeout(maybeRecord, 200)));
-})();
-
-// Initial attempt and late title catch
-(async () => {
-  await sleep(600);
-  maybeRecord();
-  let tries = 0;
-  const int = setInterval(() => { tries++; maybeRecord(); if (tries > 6) clearInterval(int); }, 1000);
-  flushUnsent();
-})();

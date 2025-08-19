@@ -1,43 +1,173 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
-  <body style="font-family:system-ui;padding:16px;max-width:600px">
-    <h3>AI Project Saver</h3>
-    <label>Webhook URL<br><input id="url" style="width:100%"></label><br><br>
-    <label>Secret<br><input id="secret" style="width:100%"></label><br><br>
-    <button id="save">Save</button>
-    <button id="test" style="margin-left:8px;">Send Test</button>
+<head>
+  <meta charset="utf-8">
+  <title>AI Chat Tracker Options</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; padding: 20px; max-width: 600px; }
+    .section { margin-bottom: 25px; padding: 15px; border: 1px solid #ddd; border-radius: 6px; }
+    .section h3 { margin-top: 0; color: #333; }
+    input[type="url"], input[type="password"] { width: 100%; padding: 8px; margin: 5px 0; border: 1px solid #ccc; border-radius: 4px; }
+    button { padding: 10px 20px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; }
+    .primary { background: #007cba; color: white; }
+    .secondary { background: #f0f0f0; color: #333; }
+    .success { background: #28a745; color: white; }
+    .error { background: #dc3545; color: white; }
+    #status { padding: 10px; margin: 10px 0; border-radius: 4px; display: none; }
+    .debug { font-family: monospace; background: #f8f9fa; padding: 10px; border-radius: 4px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>🤖 AI Chat Tracker Settings</h1>
+  
+  <div class="section">
+    <h3>📡 Webhook Configuration</h3>
+    <label>
+      <strong>Google Apps Script Webhook URL:</strong><br>
+      <input type="url" id="webhook" placeholder="https://script.google.com/macros/s/.../exec" required>
+    </label>
+    <br><br>
+    <label>
+      <strong>Secret Key:</strong><br>
+      <input type="password" id="secret" placeholder="sEcuRe_2025!xyz" required>
+    </label>
+    <br><br>
+    <button id="save" class="primary">💾 Save Settings</button>
+    <button id="test" class="secondary">🧪 Send Test</button>
+  </div>
 
-    <script>
-      chrome.storage.sync.get(['webhook','secret'], ({webhook, secret}) => {
-        if (webhook) document.getElementById('url').value = webhook;
-        if (secret) document.getElementById('secret').value = secret;
-      });
+  <div class="section">
+    <h3>📊 Status & Debugging</h3>
+    <button id="clearCaptures" class="secondary">🗑️ Clear Capture History</button>
+    <button id="clearFailed" class="secondary">♻️ Clear Failed Queue</button>
+    <button id="showDebug" class="secondary">🔍 Show Debug Info</button>
+    <div id="debugInfo" class="debug" style="display: none;"></div>
+  </div>
 
-      document.getElementById('save').onclick = () => {
-        chrome.storage.sync.set({
-          webhook: document.getElementById('url').value.trim(),
-          secret: document.getElementById('secret').value.trim()
-        }, () => alert('Saved'));
-      };
+  <div id="status"></div>
 
-      async function sign(body, secret) {
-        const enc = new TextEncoder().encode(JSON.stringify(body));
-        const key = await crypto.subtle.importKey(
-          'raw', new TextEncoder().encode(secret),
-          {name:'HMAC', hash:'SHA-256'}, false, ['sign']
-        );
-        const sig = await crypto.subtle.sign('HMAC', key, enc);
-        return btoa(Array.from(new Uint8Array(sig), b => String.fromCharCode(b)).join(''));
+  <script>
+    const SECRET = 'sEcuRe_2025!xyz';
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Load saved settings
+      const { webhook, secret } = await chrome.storage.sync.get(['webhook', 'secret']);
+      document.getElementById('webhook').value = webhook || '';
+      document.getElementById('secret').value = secret || SECRET;
+    });
+
+    document.getElementById('save').addEventListener('click', async () => {
+      const webhook = document.getElementById('webhook').value.trim();
+      const secret = document.getElementById('secret').value.trim();
+
+      if (!webhook || !secret) {
+        showStatus('Please fill in all fields', 'error');
+        return;
       }
 
-      document.getElementById('test').onclick = async () => {
-        const {webhook, secret} = await chrome.storage.sync.get(['webhook','secret']);
-        if (!webhook || !secret) return alert('Set webhook and secret first');
-        const body = { rows: [{ platform:'SelfTest', type:'Ping', title:'Options Test', url:location.href, id:'options', notes:'ok' }] };
+      await chrome.storage.sync.set({ webhook, secret });
+      showStatus('Settings saved successfully!', 'success');
+    });
+
+    document.getElementById('test').addEventListener('click', async () => {
+      const webhook = document.getElementById('webhook').value.trim();
+      const secret = document.getElementById('secret').value.trim() || SECRET;
+
+      if (!webhook) {
+        showStatus('Please enter webhook URL first', 'error');
+        return;
+      }
+
+      try {
+        // Create test payload
+        const body = {
+          rows: [{
+            platform: 'SelfTest',
+            type: 'Test',
+            title: 'Extension Test',
+            url: 'chrome-extension://test',
+            id: `test_${Date.now()}`,
+            notes: 'Automated test from options page'
+          }]
+        };
+
+        // Sign the payload
         body.sig = await sign(body, secret);
-        const res = await fetch(webhook, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-        alert(res.ok ? 'Test sent' : 'Test failed');
+
+        const response = await fetch(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        const result = await response.json();
+        
+        if (response.ok && result.ok) {
+          showStatus(`Test successful! Appended: ${result.appended} rows`, 'success');
+        } else {
+          showStatus(`Test failed: ${result.error || 'Unknown error'}`, 'error');
+        }
+      } catch (error) {
+        showStatus(`Test error: ${error.message}`, 'error');
+        console.error('Test failed:', error);
+      }
+    });
+
+    document.getElementById('clearCaptures').addEventListener('click', async () => {
+      await chrome.storage.local.set({ captures: {} });
+      showStatus('Capture history cleared', 'success');
+    });
+
+    document.getElementById('clearFailed').addEventListener('click', async () => {
+      await chrome.storage.local.set({ failed: [] });
+      showStatus('Failed queue cleared', 'success');
+    });
+
+    document.getElementById('showDebug').addEventListener('click', async () => {
+      const { captures = {}, failed = [] } = await chrome.storage.local.get(['captures', 'failed']);
+      const debugInfo = {
+        totalCaptures: Object.keys(captures).length,
+        failedRequests: failed.length,
+        recentCaptures: Object.entries(captures)
+          .sort((a, b) => b[1].timestamp - a[1].timestamp)
+          .slice(0, 5)
+          .map(([key, data]) => ({
+            key,
+            title: data.title,
+            timestamp: new Date(data.timestamp).toLocaleString()
+          }))
       };
-    </script>
-  </body>
+
+      document.getElementById('debugInfo').style.display = 'block';
+      document.getElementById('debugInfo').textContent = JSON.stringify(debugInfo, null, 2);
+    });
+
+    function showStatus(message, type = 'success') {
+      const status = document.getElementById('status');
+      status.textContent = message;
+      status.className = type;
+      status.style.display = 'block';
+      setTimeout(() => {
+        status.style.display = 'none';
+      }, 5000);
+    }
+
+    async function sign(body, secret) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(JSON.stringify(body));
+      const keyData = encoder.encode(secret);
+      
+      const key = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+      
+      const signature = await crypto.subtle.sign('HMAC', key, data);
+      return btoa(Array.from(new Uint8Array(signature), b => String.fromCharCode(b)).join(''));
+    }
+  </script>
+</body>
 </html>
